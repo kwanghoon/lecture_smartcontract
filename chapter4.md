@@ -207,7 +207,7 @@ contract.transfer(B,2000){by:A};
 
 // 이벤트 Transfer{from:A, to:B, value:2000} 발생 
 
-assert contract.balanceOf[A] == 2000;
+assert contract.balanceOf[B] == 2000;
 assert contract.balanceOf[A] == 8000;
 
 contract.blacklisting(B){by:A}
@@ -228,7 +228,7 @@ contract.deleteFromBlacklist(B){by:A};
 
 contract.transfer(B,2000){by:A};
 
-assert contract.balanceOf[A] == 4000;
+assert contract.balanceOf[B] == 4000;
 assert contract.balanceOf[A] == 6000;
 
 ```
@@ -289,6 +289,202 @@ assert contract.balanceOf[A] == 6000;
 ```
 
 ## 추가기능2: 캐시백 
+
+OreOreCoin 가상 화폐를 사용하는 주소는 각자의 캐시백을 0~100%로 설정하여, 이 주소로 누군가 송금하면 캐시백 비율만큼을 되돌려준다. 각 주소의 캐시백은 그 주소 소유자만 설정할 수 있다. 
+
+### 캐시백 기능을 갖춘 가상 화폐
+```
+pragma solidity ^0.5.7;
+
+// 캐시백 기능이 추가된 가상 화폐
+contract OreOreCoin {
+    // (1) 상태 변수 선언
+    string public name; // 토큰 이름
+    string public symbol; // 토큰 단위
+    uint8 public decimals; // 소수점 이하 자릿수
+    uint256 public totalSupply; // 토큰 총량
+    mapping (address => uint256) public balanceOf; // 각 주소의 잔고
+    mapping (address => int8) public blackList; // 블랙리스트
+    mapping (address => int8) public cashbackRate; // 각 주소의 캐시백 비율
+    address public owner; // 소유자 주소
+     
+    // 수식자
+    modifier onlyOwner() { if (msg.sender != owner) revert(); _; }
+     
+    // (2) 이벤트 알림
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Blacklisted(address indexed target);
+    event DeleteFromBlacklist(address indexed target);
+    event RejectedPaymentToBlacklistedAddr(address indexed from, address indexed to, uint256 value);
+    event RejectedPaymentFromBlacklistedAddr(address indexed from, address indexed to, uint256 value);
+    event SetCashback(address indexed addr, int8 rate);
+    event Cashback(address indexed from, address indexed to, uint256 value);
+     
+    // 생성자
+    constructor(uint256 _supply, string memory _name, string memory _symbol, uint8 _decimals) public {
+        balanceOf[msg.sender] = _supply;
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        totalSupply = _supply;
+        owner = msg.sender;
+    }
+     
+    // 주소를 블랙리스트에 등록
+    function blacklisting(address _addr) onlyOwner public {
+        blackList[_addr] = 1;
+        emit Blacklisted(_addr);
+    }
+     
+    // 주소를 블랙리스트에서 제거
+    function deleteFromBlacklist(address _addr) onlyOwner public {
+        blackList[_addr] = -1;
+        emit DeleteFromBlacklist(_addr);
+    }
+     
+    // (3) 캐시백 비율 설정
+    function setCashbackRate(int8 _rate) public {
+        if (_rate < 1) {
+           _rate = -1;
+        } else if (_rate > 100) {
+            _rate = 100;
+        }
+        cashbackRate[msg.sender] = _rate;
+        if (_rate < 1) {
+            _rate = 0;
+        }
+        emit SetCashback(msg.sender, _rate);
+    }
+     
+    // 송금
+    function transfer(address _to, uint256 _value) public {
+        // 부정 송금 확인
+        if (balanceOf[msg.sender] < _value) revert();
+        if (balanceOf[_to] + _value < balanceOf[_to]) revert();
+         
+        // 블랙리스트에 존재하는 주소는 입출금 불가
+        if (blackList[msg.sender] > 0) {
+            emit RejectedPaymentFromBlacklistedAddr(msg.sender, _to, _value);
+        } else if (blackList[_to] > 0) {
+            emit RejectedPaymentToBlacklistedAddr(msg.sender, _to, _value);
+        } else {
+            // (4) 캐시백 금액 계산(각 대상의 캐시백 비율을 사용)
+            uint256 cashback = 0;
+            if(cashbackRate[_to] > 0) cashback = _value / 100 * uint256(cashbackRate[_to]);
+             
+            balanceOf[msg.sender] -= (_value - cashback);
+            balanceOf[_to] += (_value - cashback);
+             
+            emit Transfer(msg.sender, _to, _value);
+            emit Cashback(_to, msg.sender, cashback);
+        }
+    }
+}
+```
+
+### 스마트계약 실행
+
+교재에서 Remix를 활용하여 다음 과정을 설명한다. 
+
+- 스마트계약을 만들어 계정 A가 10000 오레오레 코인을 갖도록 초기화한다.
+- 계정 A에서 스마트계약을 통해 계정 B에게 2000 오레오레 코인을 송금한다.
+- 계정B의 캐시백을 아직 설정하지 않았기 때문에 송금받은 돈을 모두 받는다.
+- 계정 B의 캐시백을 10으로 설정한다.
+- 다시 한 번 계정 A에서 스마트계약을 통해 계정 B에게 2000 오레오레 코인을 송금한다.
+- 계정 B에 3800(2000+1800)이 되고, 계정 A는 200을 캐시백으로 돌려받았기 때문에 6200(10000-2000-2000+200)이 된다.
+
+이 과정을 이더스크립트로 작성하면 다음과 같다.
+```
+account{balance:1ether} A;
+account{balance:1ether} B;
+
+account{contract:"ch4_02_OreOreCoin.sol", by:A} contract(10000, "OreOreCoin" ,"oc", 0); 
+
+assert contract.balanceOf[A] == 10000;
+
+contract.transfer(B,2000){by:A};
+
+// 이벤트 Transfer{from:A, to:B, value:2000} 발생 
+// 이벤트 Cashback{from:B, to:A, value:0} 발생
+
+assert contract.balanceOf[B] == 2000;
+assert contract.balanceOf[A] == 8000;
+
+contract.setCashbackRate(10){by:B}
+
+// 이벤트 SetCashback{from:B, value:10} 발생
+
+contract.transfer(B,2000){by:A};
+
+// 이벤트 Transfer{from:A, to:B, value:2000} 발생 
+// 이벤트 Cashback{from:B, to:A, value:10} 발생
+
+assert contract.balanceOf[B] == 3800;
+assert contract.balanceOf[A] == 6200;
+```
+
+교재 예제와 차이
+```
+< pragma solidity ^0.5.7;
+---
+> pragma solidity ^0.4.8;
+16c16
+<     modifier onlyOwner() { if (msg.sender != owner) revert(); _; }
+---
+>     modifier onlyOwner() { if (msg.sender != owner) throw; _; }
+28c28
+<     constructor(uint256 _supply, string memory _name, string memory _symbol, uint8 _decimals) public {
+---
+>     function OreOreCoin(uint256 _supply, string _name, string _symbol, uint8 _decimals) {
+38c38
+<     function blacklisting(address _addr) onlyOwner public {
+---
+>     function blacklisting(address _addr) onlyOwner {
+40c40
+<         emit Blacklisted(_addr);
+---
+>         Blacklisted(_addr);
+44c44
+<     function deleteFromBlacklist(address _addr) onlyOwner public {
+---
+>     function deleteFromBlacklist(address _addr) onlyOwner {
+46c46
+<         emit DeleteFromBlacklist(_addr);
+---
+>         DeleteFromBlacklist(_addr);
+50c50
+<     function setCashbackRate(int8 _rate) public {
+---
+>     function setCashbackRate(int8 _rate) {
+60c60
+<         emit SetCashback(msg.sender, _rate);
+---
+>         SetCashback(msg.sender, _rate);
+64c64
+<     function transfer(address _to, uint256 _value) public {
+---
+>     function transfer(address _to, uint256 _value) {
+66,67c66,67
+<         if (balanceOf[msg.sender] < _value) revert();
+<         if (balanceOf[_to] + _value < balanceOf[_to]) revert();
+---
+>         if (balanceOf[msg.sender] < _value) throw;
+>         if (balanceOf[_to] + _value < balanceOf[_to]) throw;
+71c71
+<             emit RejectedPaymentFromBlacklistedAddr(msg.sender, _to, _value);
+---
+>             RejectedPaymentFromBlacklistedAddr(msg.sender, _to, _value);
+73c73
+<             emit RejectedPaymentToBlacklistedAddr(msg.sender, _to, _value);
+---
+>             RejectedPaymentToBlacklistedAddr(msg.sender, _to, _value);
+82,83c82,83
+<             emit Transfer(msg.sender, _to, _value);
+<             emit Cashback(_to, msg.sender, cashback);
+---
+>             Transfer(msg.sender, _to, _value);
+>             Cashback(_to, msg.sender, cashback);
+```
 
 ## 추가기능3: 회원 관리
 
