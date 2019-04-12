@@ -106,15 +106,13 @@ assert contract.balanceOf[A] == 8000;
 
 가상 화폐 스마트계약에 블랙 리스트 기능을 추가한다. 
 
-1) | 블랙리스트에 계정을 추가하거나 그 리스트에서 제외시킬 수 있다.
----|------------------------------------------------------------------------
-|  Blacklisted 이벤트
-|  DeletedFromBlacklist 이벤트
+* 블랙리스트에 계정을 추가하거나 그 리스트에서 제외시킬 수 있다.
+	* Blacklisted 이벤트
+	* DeletedFromBlacklist 이벤트
 
-2) | 블랙리스트에 포함된 계정에 송금하는 것을 막고, 또한 이 계정에서 임의의 다른 계정으로 송금하는 것도 막는다. 
----|------------------------------------------------------------------------
-|  RejectedPaymentToBlacklistedAddr 이벤트
-|  RejectedPaymentFromBlacklistedAddr 이벤트 
+* 블랙리스트에 포함된 계정에 송금하는 것을 막고, 또한 이 계정에서 임의의 다른 계정으로 송금하는 것도 막는다. 
+	* RejectedPaymentToBlacklistedAddr 이벤트
+	* RejectedPaymentFromBlacklistedAddr 이벤트 
 
 
 ### 블랙리스트 기능을 갖춘 가상 화폐 계약 
