@@ -290,7 +290,7 @@ contract Crowdsale is Owned {
             uint amount = address(this).balance;
             if (amount > 0) {
 //                bool ok = msg.sender.call.value(amount)();
-                (bool ok, bytes memory returnData) = msg.sender.call(abi.encodeWithSignature("",amount));
+                bool ok = msg.sender.send(amount);
                 emit WithdrawalEther(msg.sender, amount, ok);
             }
             // 남은 토큰
@@ -325,8 +325,7 @@ contract Crowdsale is Owned {
             }
         } else {
             if (fundersProperty[msg.sender].paymentEther > 0) {
-                (bool ok, bytes memory returnData) =
-		      msg.sender.call(abi.encodeWithSignature("",fundersProperty[msg.sender].paymentEther));
+                bool ok = msg.sender.send(fundersProperty[msg.sender].paymentEther);
                 if (ok) {
                     fundersProperty[msg.sender].withdrawed = true;
                 }
