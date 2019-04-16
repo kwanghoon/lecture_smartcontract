@@ -1454,18 +1454,432 @@ crowdSale.withdrawal(){by:C}'
 
 ## 추가기능5: 토큰과 이더 에스크로 
 
+에스크로(Escrow)는 판매자와 소비자 사이에 신뢰할 수 있는 중개자를 뜻한다. 에스크로 역할을 하는 스마트계약을 만들어 토큰과 이더를 교환하도록 중개한다. 
+
+- 토큰을 발행하기 위해 코인을 만든다. 
+- 에스크로 스마트계약을 만들고 이더 금액을 정하고 이 금액과 교환할 코인의 수를 정한다. 예를 들어, 10이더를 2000코인과 바꾼다. 
+- 토큰을 판매할 사람(예: 계정 A)이 중개자(예:에스크로)에게 2000코인을 보낸다. 
+- 이 토큰을 구매할 사람(예: 계정 B 또는 계정 C)은 중개자(예: 에스크로)에게 이더를 보낸다. 만일 10이더보다 적으면 거래가 진행되지 않는다.
+- 지정한 금액을 보내면 에스크로는 종료하고 받은 이더를 토큰을 판 사람에게 보내고, 토큰을 이더를 보낸 사람에게 보낻다.
+
 ### 중개자(에스크로)를 갖춘 가상 화폐
 
 ```
+pragma solidity ^0.5.7;
+
+// 소유자 관리용 계약
+contract Owned {
+    // 상태 변수
+    address payable public owner; // 소유자 주소
+
+    // 소유자 변경 시 이벤트
+    event TransferOwnership(address oldaddr, address newaddr);
+
+    // 소유자 한정 메서드용 수식자
+    modifier onlyOwner() { if (msg.sender != owner) revert(); _; }
+
+    // 생성자
+    constructor() public {
+        owner = msg.sender; // 처음에 계약을 생성한 주소를 소유자로 한다
+    }
+    
+    // (1) 소유자 변경
+    function transferOwnership(address payable _new) onlyOwner public {
+        address oldaddr = owner;
+        owner = _new;
+        emit TransferOwnership(oldaddr, owner);
+    }
+}
+
+// (2) 회원 관리용 계약
+contract Members is Owned {
+    // (3) 상태 변수 선언
+    address public coin; // 토큰(가상 화폐) 주소
+    MemberStatus[] public status; // 회원 등급 배열
+    mapping(address => History) public tradingHistory; // 회원별 거래 이력
+     
+    // (4) 회원 등급용 구조체
+    struct MemberStatus {
+        string name; // 등급명
+        uint256 times; // 최저 거래 회수
+        uint256 sum; // 최저 거래 금액
+        int8 rate; // 캐시백 비율
+    }
+    // 거래 이력용 구조체
+    struct History {
+        uint256 times; // 거래 회수
+        uint256 sum; // 거래 금액
+        uint256 statusIndex; // 등급 인덱스
+    }
+ 
+    // (5) 토큰 한정 메서드용 수식자
+    modifier onlyCoin() { if (msg.sender == coin) _; }
+     
+    // (6) 토큰 주소 설정
+    function setCoin(address _addr) onlyOwner public {
+        coin = _addr;
+    }
+     
+    // (7) 회원 등급 추가
+    function pushStatus(string memory _name, uint256 _times, uint256 _sum, int8 _rate) onlyOwner public {
+        status.push(MemberStatus({
+            name: _name,
+            times: _times,
+            sum: _sum,
+            rate: _rate
+        }));
+    }
+ 
+    // (8) 회원 등급 내용 변경
+    function editStatus(uint256 _index, string memory _name, uint256 _times, uint256 _sum, int8 _rate) onlyOwner public {
+        if (_index < status.length) {
+            status[_index].name = _name;
+            status[_index].times = _times;
+            status[_index].sum = _sum;
+            status[_index].rate = _rate;
+        }
+    }
+     
+    // (9) 거래 내역 갱신
+    function updateHistory(address _member, uint256 _value) onlyCoin public {
+        tradingHistory[_member].times += 1;
+        tradingHistory[_member].sum += _value;
+        // 새로운 회원 등급 결정(거래마다 실행)
+        uint256 index;
+        int8 tmprate;
+        for (uint i = 0; i < status.length; i++) {
+            // 최저 거래 횟수, 최저 거래 금액 충족 시 가장 캐시백 비율이 좋은 등급으로 설정
+            if (tradingHistory[_member].times >= status[i].times &&
+                tradingHistory[_member].sum >= status[i].sum &&
+                tmprate < status[i].rate) {
+                index = i;
+            }
+        }
+        tradingHistory[_member].statusIndex = index;
+    }
+
+    // (10) 캐시백 비율 획득(회원의 등급에 해당하는 비율 확인)
+    function getCashbackRate(address _member) view public returns (int8 rate) {
+        rate = status[tradingHistory[_member].statusIndex].rate;
+    }
+}
+     
+// (11) 회원 관리 기능이 구현된 가상 화폐
+contract OreOreCoin is Owned{
+    // 상태 변수 선언
+    string public name; // 토큰 이름
+    string public symbol; // 토큰 단위
+    uint8 public decimals; // 소수점 이하 자릿수
+    uint256 public totalSupply; // 토큰 총량
+    mapping (address => uint256) public balanceOf; // 각 주소의 잔고
+    mapping (address => int8) public blackList; // 블랙리스트
+    mapping (address => Members) public members; // 각 주소의 회원 정보
+     
+    // 이벤트 알림
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Blacklisted(address indexed target);
+    event DeleteFromBlacklist(address indexed target);
+    event RejectedPaymentToBlacklistedAddr(address indexed from, address indexed to, uint256 value);
+    event RejectedPaymentFromBlacklistedAddr(address indexed from, address indexed to, uint256 value);
+    event Cashback(address indexed from, address indexed to, uint256 value);
+     
+    // 생성자
+    constructor(uint256 _supply, string memory _name, string memory _symbol, uint8 _decimals) public {
+        balanceOf[msg.sender] = _supply;
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        totalSupply = _supply;
+    }
+ 
+    // 주소를 블랙리스트에 등록
+    function blacklisting(address _addr) onlyOwner public {
+        blackList[_addr] = 1;
+        emit Blacklisted(_addr);
+    }
+ 
+    // 주소를 블랙리스트에서 해제
+    function deleteFromBlacklist(address _addr) onlyOwner public {
+        blackList[_addr] = -1;
+        emit DeleteFromBlacklist(_addr);
+    }
+ 
+    // 회원 관리 계약 설정
+    function setMembers(Members _members) public {
+        members[msg.sender] = Members(_members);
+    }
+ 
+    // 송금
+    function transfer(address _to, uint256 _value) public {
+        // 부정 송금 확인
+        if (balanceOf[msg.sender] < _value) revert();
+        if (balanceOf[_to] + _value < balanceOf[_to]) revert();
+
+        // 블랙리스트에 존재하는 계정은 입출금 불가
+        if (blackList[msg.sender] > 0) {
+            emit RejectedPaymentFromBlacklistedAddr(msg.sender, _to, _value);
+        } else if (blackList[_to] > 0) {
+            emit RejectedPaymentToBlacklistedAddr(msg.sender, _to, _value);
+        } else {
+            // (12) 캐시백 금액을 계산(각 대상의 비율을 사용)
+            uint256 cashback = 0;
+            if(address(members[_to]) > address(0)) {
+                cashback = _value / 100 * uint256(members[_to].getCashbackRate(msg.sender));
+                members[_to].updateHistory(msg.sender, _value);
+            }
+ 
+            balanceOf[msg.sender] -= (_value - cashback);
+            balanceOf[_to] += (_value - cashback);
+ 
+            emit Transfer(msg.sender, _to, _value);
+            emit Cashback(_to, msg.sender, cashback);
+        }
+    }
+}
+
+// (1) 에스크로
+contract Escrow is Owned {
+    // (2) 상태 변수
+    OreOreCoin public token; // 토큰
+    uint256 public salesVolume; // 판매량
+    uint256 public sellingPrice; // 판매 가격
+    uint256 public deadline; // 기한
+    bool public isOpened; // 에스크로 개시 플래그
+     
+    // (3) 이벤트 알림
+    event EscrowStart(uint salesVolume, uint sellingPrice, uint deadline, address beneficiary);
+    event ConfirmedPayment(address addr, uint amount);
+     
+    // (4) 생성자
+    constructor (OreOreCoin _token, uint256 _salesVolume, uint256 _priceInEther) public {
+        token = OreOreCoin(_token);
+        salesVolume = _salesVolume;
+        sellingPrice = _priceInEther * 1 ether;
+    }
+     
+    // (5) 이름 없는 함수(Ether 수령)
+    function () payable external {
+        // 개시 전 또는 기한이 끝난 경우에는 예외 처리
+        if (!isOpened || now >= deadline) revert();
+         
+        // 판매 가격 미만인 경우 예외 처리
+        uint amount = msg.value;
+        if (amount < sellingPrice) revert();
+         
+        // 보내는 사람에게 토큰을 전달하고 에스크로 개시 플래그를 false로 설정
+        token.transfer(msg.sender, salesVolume);
+        isOpened = false;
+        emit ConfirmedPayment(msg.sender, amount);
+    }
+     
+    // (6) 개시(토큰이 예정 수 이상이라면 개시)
+    function start(uint256 _durationInMinutes) onlyOwner public {
+        if (address(token) == address(0) || salesVolume == 0 || sellingPrice == 0 || deadline != 0) revert();
+        if (token.balanceOf(address(this)) >= salesVolume){
+            deadline = now + _durationInMinutes * 1 minutes;
+            isOpened = true;
+            emit EscrowStart(salesVolume, sellingPrice, deadline, owner);
+        }
+    }
+     
+    // (7) 남은 시간 확인용 메서드(분 단위)
+    function getRemainingTime() view public returns(uint min) {
+        if(now < deadline) {
+            min = (deadline - now) / (1 minutes);
+        }
+    }
+     
+    // (8) 종료
+    function close() onlyOwner public {
+        // 토큰을 소유자에게 전송
+        token.transfer(owner, token.balanceOf(address(this)));
+        // 계약을 파기(해당 계약이 보유하고 있는 Ether는 소유자에게 전송
+        selfdestruct(owner);
+    }
+}
 ```
 
 ### 스마트 계약 실행
 
+- 계정 A는 코인을 만든다. 
+- 계정 A는 에스크로를 만들고, 10이더와 2000코인을 거래 조건으로 둔다.
+- 계정 A는 2000코인을 에스크로에게 보낸다.
+- 계정 B에서 5이더를 에스크로에게 보내어 거래를 시도하지만 10이더보다 적기 때문에 거래가 이루어지지 않는다.
+- 계정 C에서 10이더를 보내면 거래가 성사된다.
+- 에스크로를 종료하면 계정 C에 2000코인을 보내고 계정 A에 10이더를 보낸다. 
+
 ```
+account{balance:100ether} A;
+account{balance:100ether} B;
+account{balance:100ether} C;
+
+account{contract:"06_OreOreCoin.sol", by:A} ooc("OreOreCoin", 1000, "OreOreCoin", "oc", 0);
+account{contract:"06_OreOreCoin.sol", by:A} escrow(ooc, 2000,10);
+
+// 에스크로를 만들 때 10이더를 주면 2000코인을 주도록 설정했다.
+
+ooc.transfer(escrow, 2000){by:A};
+
+escrow.start(15){by:A};
+
+escrow.(){by:B, value:5ether};
+
+// 5이더는 10이더메 못 미치므로 거래가 성사되지 않는다. 
+
+escrow.(){by:C, value:10ether};
+
+// 10이더를 내면 거래가 성사된다. 
+
+escrow.close(){by:A};
+
+// 에스크로가 보유하고 있던 2000코인을 B에게 전달하고
+// 에스크로 스마트계약을 destruct하면서 A에게 10이더를 보낸다.
+
+
 ```
 
 교재 예제와 차이
 ```
+1c1
+< pragma solidity ^0.5.7;
+---
+> pragma solidity ^0.4.8;
+6c6
+<     address payable public owner; // 소유자 주소
+---
+>     address public owner; // 소유자 주소
+12c12
+<     modifier onlyOwner() { if (msg.sender != owner) revert(); _; }
+---
+>     modifier onlyOwner() { if (msg.sender != owner) throw; _; }
+15c15
+<     constructor() public {
+---
+>     function Owned() {
+20c20
+<     function transferOwnership(address payable _new) onlyOwner public {
+---
+>     function transferOwnership(address _new) onlyOwner {
+23c23
+<         emit TransferOwnership(oldaddr, owner);
+---
+>         TransferOwnership(oldaddr, owner);
+52c52
+<     function setCoin(address _addr) onlyOwner public {
+---
+>     function setCoin(address _addr) onlyOwner {
+57c57
+<     function pushStatus(string memory _name, uint256 _times, uint256 _sum, int8 _rate) onlyOwner public {
+---
+>     function pushStatus(string _name, uint256 _times, uint256 _sum, int8 _rate) onlyOwner {
+67c67
+<     function editStatus(uint256 _index, string memory _name, uint256 _times, uint256 _sum, int8 _rate) onlyOwner public {
+---
+>     function editStatus(uint256 _index, string _name, uint256 _times, uint256 _sum, int8 _rate) onlyOwner {
+77c77
+<     function updateHistory(address _member, uint256 _value) onlyCoin public {
+---
+>     function updateHistory(address _member, uint256 _value) onlyCoin {
+95c95
+<     function getCashbackRate(address _member) view public returns (int8 rate) {
+---
+>     function getCashbackRate(address _member) constant returns (int8 rate) {
+120c120
+<     constructor(uint256 _supply, string memory _name, string memory _symbol, uint8 _decimals) public {
+---
+>     function OreOreCoin(uint256 _supply, string _name, string _symbol, uint8 _decimals) {
+129c129
+<     function blacklisting(address _addr) onlyOwner public {
+---
+>     function blacklisting(address _addr) onlyOwner {
+131c131
+<         emit Blacklisted(_addr);
+---
+>         Blacklisted(_addr);
+135c135
+<     function deleteFromBlacklist(address _addr) onlyOwner public {
+---
+>     function deleteFromBlacklist(address _addr) onlyOwner {
+137c137
+<         emit DeleteFromBlacklist(_addr);
+---
+>         DeleteFromBlacklist(_addr);
+141c141
+<     function setMembers(Members _members) public {
+---
+>     function setMembers(Members _members) {
+146c146
+<     function transfer(address _to, uint256 _value) public {
+---
+>     function transfer(address _to, uint256 _value) {
+148,149c148,149
+<         if (balanceOf[msg.sender] < _value) revert();
+<         if (balanceOf[_to] + _value < balanceOf[_to]) revert();
+---
+>         if (balanceOf[msg.sender] < _value) throw;
+>         if (balanceOf[_to] + _value < balanceOf[_to]) throw;
+153c153
+<             emit RejectedPaymentFromBlacklistedAddr(msg.sender, _to, _value);
+---
+>             RejectedPaymentFromBlacklistedAddr(msg.sender, _to, _value);
+155c155
+<             emit RejectedPaymentToBlacklistedAddr(msg.sender, _to, _value);
+---
+>             RejectedPaymentToBlacklistedAddr(msg.sender, _to, _value);
+159c159
+<             if(address(members[_to]) > address(0)) {
+---
+>             if(members[_to] > address(0)) {
+167,168c167,168
+<             emit Transfer(msg.sender, _to, _value);
+<             emit Cashback(_to, msg.sender, cashback);
+---
+>             Transfer(msg.sender, _to, _value);
+>             Cashback(_to, msg.sender, cashback);
+187c187
+<     constructor (OreOreCoin _token, uint256 _salesVolume, uint256 _priceInEther) public {
+---
+>     function Escrow (OreOreCoin _token, uint256 _salesVolume, uint256 _priceInEther) {
+194c194
+<     function () payable external {
+---
+>     function () payable {
+196c196
+<         if (!isOpened || now >= deadline) revert();
+---
+>         if (!isOpened || now >= deadline) throw;
+200c200
+<         if (amount < sellingPrice) revert();
+---
+>         if (amount < sellingPrice) throw;
+205c205
+<         emit ConfirmedPayment(msg.sender, amount);
+---
+>         ConfirmedPayment(msg.sender, amount);
+209,211c209,211
+<     function start(uint256 _durationInMinutes) onlyOwner public {
+<         if (address(token) == address(0) || salesVolume == 0 || sellingPrice == 0 || deadline != 0) revert();
+<         if (token.balanceOf(address(this)) >= salesVolume){
+---
+>     function start(uint256 _durationInMinutes) onlyOwner {
+>         if (token == address(0) || salesVolume == 0 || sellingPrice == 0 || deadline != 0) throw;
+>         if (token.balanceOf(this) >= salesVolume){
+214c214
+<             emit EscrowStart(salesVolume, sellingPrice, deadline, owner);
+---
+>             EscrowStart(salesVolume, sellingPrice, deadline, owner);
+219c219
+<     function getRemainingTime() view public returns(uint min) {
+---
+>     function getRemainingTime() constant returns(uint min) {
+226c226
+<     function close() onlyOwner public {
+---
+>     function close() onlyOwner {
+228c228
+<         token.transfer(owner, token.balanceOf(address(this)));
+---
+>         token.transfer(owner, token.balanceOf(this));
 ```
 
 
